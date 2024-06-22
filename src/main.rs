@@ -1,6 +1,13 @@
-use std::path::PathBuf;
-
+use anyhow::Result;
 use clap::Parser;
+use rusqlite::Connection;
+use std::{
+    env,
+    fs::File,
+    io::{BufRead, BufReader, Write},
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -9,7 +16,7 @@ struct Cli {
     command: Option<String>,
 
     #[clap(short, long)]
-    timestamp: Option<u32>,
+    timestamp: Option<u128>,
 
     #[clap(short, long, value_name = "DBPATH")]
     database: Option<PathBuf>,
@@ -27,40 +34,89 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
+    let home_dir = env::var("HOMEPATH").expect("No Home directory");
+    let mut default_db_path = PathBuf::from(&home_dir);
+    default_db_path.push(".xhdb");
+
+    let db_path = cli.database.unwrap_or(default_db_path);
+
+    let connection = initialize_database(db_path).expect("If no DB no function.");
+
+    let timestamp = cli
+        .timestamp
+        .unwrap_or(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("We do be f'd.")
+                .as_millis(),
+        )
+        .try_into()
+        .expect("What could possibly go wrong.");
+
     if let Some(command) = cli.command.as_deref() {
-        println!("Go a new command: {command}");
+        save_command_to_database(&connection, command, &timestamp)
+            .expect("Couldn't insert command into database.");
     }
 
-    // You can check the value provided by positional arguments, or option arguments
-    // if let Some(name) = cli.name.as_deref() {
-    //     println!("Value for name: {name}");
-    // }
+    if let Some(file_path) = cli.migrate {
+        migrate_from_file(&connection, file_path, &timestamp).unwrap();
+    }
 
-    // if let Some(config_path) = cli.config.as_deref() {
-    //     println!("Value for config: {}", config_path.display());
-    // }
+    if cli.unique {
+        let commands = get_unique_commands(&connection).expect("Couldn't get unique commands.");
+        let mut stdout = std::io::stdout().lock();
+        for cmd in commands {
+            writeln!(stdout, "{cmd}").unwrap();
+        }
+        stdout.flush().unwrap();
+    }
+}
 
-    // // You can see how many times a particular flag or argument occurred
-    // // Note, only flags can have multiple occurrences
-    // match cli.debug {
-    //     0 => println!("Debug mode is off"),
-    //     1 => println!("Debug mode is kind of on"),
-    //     2 => println!("Debug mode is on"),
-    //     _ => println!("Don't be crazy"),
-    // }
+fn initialize_database(path: PathBuf) -> Result<Connection, anyhow::Error> {
+    let connection = Connection::open(path)?;
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS commands(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            command TEXT,
+            timestamp_ms INTEGER
+        )",
+        (),
+    )?;
+    Ok(connection)
+}
 
-    // // You can check for the existence of subcommands, and if found use their
-    // // matches just as you would the top level cmd
-    // match &cli.command {
-    //     Some(Commands::Test { list }) => {
-    //         if *list {
-    //             println!("Printing testing lists...");
-    //         } else {
-    //             println!("Not printing testing lists...");
-    //         }
-    //     }
-    //     None => {}
-    // }
+fn save_command_to_database(
+    connection: &Connection,
+    command: &str,
+    timestamp: &u64,
+) -> Result<(), anyhow::Error> {
+    connection.execute(
+        "INSERT INTO commands (command, timestamp_ms)
+        VALUES (?1, ?2)",
+        (command, timestamp),
+    )?;
+    Ok(())
+}
 
-    // Continued program logic goes here...
+fn get_unique_commands(connection: &Connection) -> Result<Vec<String>> {
+    let mut values = connection.prepare("SELECT DISTINCT(TRIM(LTRIM(command))) FROM commands")?;
+    let rows = values.query_map([], |row| row.get(0))?;
+    let mut commands: Vec<String> = Vec::new();
+    for command in rows {
+        commands.push(command?);
+    }
+    Ok(commands)
+}
+
+fn migrate_from_file(connection: &Connection, file: PathBuf, timestamp: &u64) -> Result<()> {
+    let file = File::open(file)?;
+    for line in BufReader::new(file).lines() {
+        match line {
+            Ok(line) => {
+                save_command_to_database(connection, line.as_str(), timestamp).unwrap();
+            }
+            Err(e) => eprintln!("Error reading line: {e}"),
+        }
+    }
+    Ok(())
 }
