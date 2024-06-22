@@ -3,6 +3,7 @@ use clap::Parser;
 use rusqlite::Connection;
 use std::{
     env,
+    fmt::Display,
     fs::File,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
@@ -28,7 +29,18 @@ struct Cli {
     unique: bool,
 
     #[clap(long = "top", short = 'x', value_name = "NUM")]
-    topten: Option<u8>,
+    topten: Option<Option<u8>>,
+}
+
+struct TopCmd {
+    count: u32,
+    command: String,
+}
+
+impl Display for TopCmd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}\t{}", self.count, self.command)
+    }
 }
 
 fn main() {
@@ -67,6 +79,19 @@ fn main() {
         let mut stdout = std::io::stdout().lock();
         for cmd in commands {
             writeln!(stdout, "{cmd}").unwrap();
+        }
+        stdout.flush().unwrap();
+    }
+
+    if let Some(top) = cli.topten {
+        let num = top.unwrap_or(10);
+        let commands = get_top_commands(&connection, num).unwrap();
+
+        let mut stdout = std::io::stdout().lock();
+
+        for (idx, cmd) in commands.iter().enumerate() {
+            let index = idx + 1;
+            writeln!(stdout, "{index}.\t{cmd}").unwrap();
         }
         stdout.flush().unwrap();
     }
@@ -119,4 +144,28 @@ fn migrate_from_file(connection: &Connection, file: PathBuf, timestamp: &u64) ->
         }
     }
     Ok(())
+}
+
+fn get_top_commands(connection: &Connection, number: u8) -> Result<Vec<TopCmd>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT count(command),
+            TRIM(command, '\n')
+        FROM commands
+        GROUP by command
+        ORDER by count(command) DESC
+        LIMIT ?
+        ",
+    )?;
+
+    let mut rows = stmt.query([number])?;
+
+    let mut top = Vec::new();
+    while let Some(row) = rows.next()? {
+        top.push(TopCmd {
+            count: row.get(0)?,
+            command: row.get(1)?,
+        });
+    }
+    Ok(top)
 }
