@@ -28,6 +28,9 @@ struct Cli {
     #[clap(long, short, action)]
     unique: bool,
 
+    #[clap(long, short, action)]
+    all: bool,
+
     #[clap(long = "top", short = 'x', value_name = "NUM")]
     topten: Option<Option<u8>>,
 }
@@ -49,6 +52,9 @@ fn main() {
     let home_dir = env::var("HOMEPATH").expect("No Home directory");
     let mut default_db_path = PathBuf::from(&home_dir);
     default_db_path.push(".xhdb");
+
+    // let database = Database;
+    // let connection = database;
 
     let db_path = cli.database.unwrap_or(default_db_path);
 
@@ -76,6 +82,15 @@ fn main() {
 
     if cli.unique {
         let commands = get_unique_commands(&connection).expect("Couldn't get unique commands.");
+        let mut stdout = std::io::stdout().lock();
+        for cmd in commands {
+            writeln!(stdout, "{cmd}").unwrap();
+        }
+        stdout.flush().unwrap();
+    }
+
+    if cli.all {
+        let commands = get_all_commands(&connection).expect("Couldn't get all commands.");
         let mut stdout = std::io::stdout().lock();
         for cmd in commands {
             writeln!(stdout, "{cmd}").unwrap();
@@ -123,8 +138,21 @@ fn save_command_to_database(
     Ok(())
 }
 
+fn get_all_commands(connection: &Connection) -> Result<Vec<String>> {
+    let mut values =
+        connection.prepare("SELECT command FROM commands ORDER BY timestamp_ms DESC")?;
+    let rows = values.query_map([], |row| row.get(0))?;
+    let mut commands: Vec<String> = Vec::new();
+    for command in rows {
+        commands.push(command?);
+    }
+    Ok(commands)
+}
+
 fn get_unique_commands(connection: &Connection) -> Result<Vec<String>> {
-    let mut values = connection.prepare("SELECT DISTINCT(TRIM(LTRIM(command))) FROM commands")?;
+    let mut values = connection.prepare(
+        "SELECT DISTINCT(TRIM(LTRIM(command))) FROM commands ORDER BY timestamp_ms DESC",
+    )?;
     let rows = values.query_map([], |row| row.get(0))?;
     let mut commands: Vec<String> = Vec::new();
     for command in rows {
